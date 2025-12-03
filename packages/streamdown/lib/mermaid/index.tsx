@@ -1,5 +1,9 @@
 import type { MermaidConfig } from "mermaid";
-import { useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useRef, useState } from "react";
+import {
+  useIdleRender,
+  useViewportRender,
+} from "../../hooks/use-viewport-render";
 import { StreamdownContext } from "../../index";
 import { cn } from "../utils";
 import { PanZoom } from "./pan-zoom";
@@ -25,50 +29,56 @@ export const Mermaid = ({
   const [svgContent, setSvgContent] = useState<string>("");
   const [lastValidSvg, setLastValidSvg] = useState<string>("");
   const [retryCount, setRetryCount] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
   const { mermaid: mermaidContext } = useContext(StreamdownContext);
   const ErrorComponent = mermaidContext?.errorComponent;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: "Required for Mermaid"
-  useEffect(() => {
-    const renderChart = async () => {
-      try {
-        setError(null);
-        setIsLoading(true);
+  // Use viewport render hook to optimize performance by only rendering when visible
+  const isVisible = useViewportRender(containerRef, {
+    skip: fullscreen,
+    debounceMs: 300,
+    rootMargin: "200px",
+  });
 
-        // Initialize mermaid with optional custom config
-        const mermaid = await initializeMermaid(config);
+  // Render chart callback
+  const renderChart = useCallback(async () => {
+    try {
+      setError(null);
+      setIsLoading(true);
 
-        // Use a stable ID based on chart content hash and timestamp to ensure uniqueness
-        const chartHash = chart.split("").reduce((acc, char) => {
-          // biome-ignore lint/suspicious/noBitwiseOperators: "Required for Mermaid"
-          return ((acc << 5) - acc + char.charCodeAt(0)) | 0;
-        }, 0);
-        const uniqueId = `mermaid-${Math.abs(chartHash)}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      // Initialize mermaid with optional custom config
+      const mermaid = await initializeMermaid(config);
 
-        const { svg } = await mermaid.render(uniqueId, chart);
+      // Use a stable ID based on chart content hash and timestamp to ensure uniqueness
+      const chartHash = chart.split("").reduce((acc, char) => {
+        // biome-ignore lint/suspicious/noBitwiseOperators: "Required for Mermaid"
+        return ((acc << 5) - acc + char.charCodeAt(0)) | 0;
+      }, 0);
+      const uniqueId = `mermaid-${Math.abs(chartHash)}-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-        // Update both current and last valid SVG
-        setSvgContent(svg);
-        setLastValidSvg(svg);
-      } catch (err) {
-        // Silently fail and keep the last valid SVG
-        // Don't update svgContent here - just keep what we have
+      const { svg } = await mermaid.render(uniqueId, chart);
 
-        // Only set error if we don't have any valid SVG
-        if (!(lastValidSvg || svgContent)) {
-          const errorMessage =
-            err instanceof Error
-              ? err.message
-              : "Failed to render Mermaid chart";
-          setError(errorMessage);
-        }
-      } finally {
-        setIsLoading(false);
+      // Update both current and last valid SVG
+      setSvgContent(svg);
+      setLastValidSvg(svg);
+    } catch (err) {
+      // Silently fail and keep the last valid SVG
+      // Don't update svgContent here - just keep what we have
+
+      // Only set error if we don't have any valid SVG
+      if (!(lastValidSvg || svgContent)) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to render Mermaid chart";
+        setError(errorMessage);
       }
-    };
+    } finally {
+      setIsLoading(false);
+    }
+    // biome-ignore lint/correctness/useExhaustiveDependencies: "Required for Mermaid"
+  }, [chart, config, lastValidSvg, svgContent, retryCount]);
 
-    renderChart();
-  }, [chart, config, retryCount]);
+  // Use idle render hook to render during browser idle time, preventing main thread blocking
+  useIdleRender(renderChart, isVisible, 2000);
 
   // Show loading only on initial load when we have no content
   if (isLoading && !svgContent && !lastValidSvg) {
@@ -116,27 +126,29 @@ export const Mermaid = ({
   const displaySvg = svgContent || lastValidSvg;
 
   return (
-    <PanZoom
-      className={cn(
-        fullscreen ? "h-full w-full overflow-hidden" : "my-4 overflow-hidden",
-        className
-      )}
-      fullscreen={fullscreen}
-      maxZoom={3}
-      minZoom={0.5}
-      showControls={showControls}
-      zoomStep={0.1}
-    >
-      <div
-        aria-label="Mermaid chart"
+    <div ref={containerRef}>
+      <PanZoom
         className={cn(
-          "flex justify-center",
-          fullscreen && "h-full w-full items-center"
+          fullscreen ? "h-full w-full overflow-hidden" : "my-4 overflow-hidden",
+          className
         )}
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: "Required for Mermaid"
-        dangerouslySetInnerHTML={{ __html: displaySvg }}
-        role="img"
-      />
-    </PanZoom>
+        fullscreen={fullscreen}
+        maxZoom={3}
+        minZoom={0.5}
+        showControls={showControls}
+        zoomStep={0.1}
+      >
+        <div
+          aria-label="Mermaid chart"
+          className={cn(
+            "flex justify-center",
+            fullscreen && "h-full w-full items-center"
+          )}
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: "Required for Mermaid"
+          dangerouslySetInnerHTML={{ __html: displaySvg }}
+          role="img"
+        />
+      </PanZoom>
+    </div>
   );
 };
